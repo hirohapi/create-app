@@ -34,11 +34,17 @@ def init_db():
             CREATE TABLE IF NOT EXISTS todos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
-                completed BOOLEAN DEFAULT FALSE
+                completed BOOLEAN DEFAULT FALSE,
+                date TEXT NOT NULL,
+                archived BOOLEAN DEFAULT FALSE
             )
         """
         )
-
+    try:
+            conn.execute("ALTER TABLE todos ADD COLUMN archived BOOLEAN DEFAULT FALSE")
+        except sqlite3.OperationalError:
+            # 'archived' カラムがすでにある場合はエラーが発生するので、無視
+            pass
 
 # アプリケーション起動時にデータベースを初期化
 init_db()
@@ -56,58 +62,75 @@ class TodoResponse(Todo):
 
 
 # 新規TODOを作成するエンドポイント
-@app.post("/todos", response_model=TodoResponse)
-def create_todo(todo: Todo):
+from datetime import datetime
+
+@app.post("/todos/{date}", response_model=TodoResponse)
+def create_todo(date: str, todo: Todo):
+    # dateを使用して新しいTODOを追加
     with sqlite3.connect("todos.db") as conn:
         cursor = conn.execute(
             # SQLインジェクション対策のためパラメータ化したSQL文を使用
-            "INSERT INTO todos (title, completed) VALUES (?, ?)",
-            (todo.title, todo.completed),
+            "INSERT INTO todos (title, completed, date) VALUES (?, ?, ?)",
+            (todo.title, todo.completed, date),
         )
         todo_id = cursor.lastrowid  # 新しく作成されたTODOのIDを取得
-        return {"id": todo_id, "title": todo.title, "completed": todo.completed}
+        return {"id": todo_id, "title": todo.title, "completed": todo.completed, "date": date}
+
 
 
 # 全てのTODOを取得するエンドポイント
-@app.get("/todos")
-def get_todos():
+@app.get("/todos/{date}")
+def get_todos(date: str):
     with sqlite3.connect("todos.db") as conn:
-        todos = conn.execute("SELECT * FROM todos").fetchall()  # 全てのTODOを取得
-        # データベースから取得したタプルをJSON形式に変換して返す
-        return [{"id": t[0], "title": t[1], "completed": bool(t[2])} for t in todos]
+        todos = conn.execute(
+            "SELECT * FROM todos WHERE date = ?", (date,)
+        ).fetchall()  # 指定された日付のTODOを取得
+        return [{"id": t[0], "title": t[1], "completed": bool(t[2]), "date": t[3]} for t in todos]
+
 
 
 # 指定されたIDのTODOを取得するエンドポイント
-@app.get("/todos/{todo_id}")
-def get_todo(todo_id: int):
+@app.get("/todos/{date}/{todo_id}")
+def get_todo(date: str, todo_id: int):
     with sqlite3.connect("todos.db") as conn:
-        # 指定されたIDのTODOを検索
-        todo = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
-        if not todo:  # TODOが見つからない場合は404エラーを返す
+        todo = conn.execute(
+            "SELECT * FROM todos WHERE id = ? AND date = ?", (todo_id, date)
+        ).fetchone()
+        if not todo:
             raise HTTPException(status_code=404, detail="Todo not found")
-        return {"id": todo[0], "title": todo[1], "completed": bool(todo[2])}
+        return {"id": todo[0], "title": todo[1], "completed": bool(todo[2]), "date": todo[3]}
+
+
 
 
 # 指定されたIDのTODOを更新するエンドポイント
-@app.put("/todos/{todo_id}")
-def update_todo(todo_id: int, todo: Todo):
+@app.put("/todos/{date}/{todo_id}")
+def update_todo(date: str, todo_id: int, todo: Todo):
     with sqlite3.connect("todos.db") as conn:
-        # タイトルと完了状態を更新
         cursor = conn.execute(
-            "UPDATE todos SET title = ?, completed = ? WHERE id = ?",
-            (todo.title, todo.completed, todo_id),
+            "UPDATE todos SET title = ?, completed = ? WHERE id = ? AND date = ?",
+            (todo.title, todo.completed, todo_id, date),
         )
-        if cursor.rowcount == 0:  # 更新対象のTODOが存在しない場合は404エラーを返す
+        if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Todo not found")
-        return {"id": todo_id, "title": todo.title, "completed": todo.completed}
+        return {"id": todo_id, "title": todo.title, "completed": todo.completed, "date": date}
+
 
 
 # 指定されたIDのTODOを削除するエンドポイント
-@app.delete("/todos/{todo_id}")
-def delete_todo(todo_id: int):
+@app.delete("/todos/{date}/{todo_id}")
+def delete_todo(date: str, todo_id: int):
     with sqlite3.connect("todos.db") as conn:
-        # 指定されたIDのTODOを削除
-        cursor = conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
-        if cursor.rowcount == 0:  # 削除対象のTODOが存在しない場合は404エラーを返す
+        cursor = conn.execute(
+            "DELETE FROM todos WHERE id = ? AND date = ?", (todo_id, date)
+        )
+        if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Todo not found")
         return {"message": "Todo deleted"}
+
+@app.get("/todos/completed")
+def get_completed_todos():
+    with sqlite3.connect("todos.db") as conn:
+        todos = conn.execute("SELECT * FROM todos WHERE completed = TRUE").fetchall()
+        return [{"id": t[0], "title": t[1], "completed": bool(t[2]), "due_date": t[3]} for t in todos]
+
